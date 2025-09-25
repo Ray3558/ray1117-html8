@@ -179,7 +179,7 @@
             let mqttClient = null;
             let pressureValue = -825;
             let lastPressureValue = -825;
-            const mqttWebSocketUrl = 'ws://mqttgo.io';
+            const mqttWebSocketUrl = 'wss://broker.mqttgo.io:8084/mqtt';
             const mqttPressureTopic = 'RadioRingCon77/LOADCELL';
             const mqttAngleTopic = 'RadioRingCon77/mpu6050/angleXYZ';
 
@@ -709,5 +709,6 @@
     </script>
 </body>
 </html>
+
 
 
