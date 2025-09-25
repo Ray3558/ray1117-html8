@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>憤怒火箭 (Angry Rocket) - MQTT版</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700&display=swap" rel="stylesheet">
+    <!-- 引入 MQTT.js 函式庫 -->
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <style>
+        /* --- 基本樣式 --- */
+        body {
+            background-color: #1a1a2e;
+            color: #e0e0e0;
+            font-family: 'Noto Sans TC', sans-serif;
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        h1 {
+            color: #fca311;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+        }
+
+        /* --- 遊戲容器 --- */
+        #game-container {
+            border: 3px solid #fca311;
+            border-radius: 15px;
+            box-shadow: 0 0 30px rgba(252, 163, 17, 0.4);
+            position: relative;
+            overflow: hidden;
+            background: linear-gradient(to top, #1e3a8a, #3b82f6);
+            width: 1000px;
+            height: 600px;
+        }
+
+        /* --- 遊戲畫布 --- */
+        #gameCanvas {
+            display: block;
+            background-color: transparent; /* 背景由容器控制 */
+            width: 100%;
+            height: 100%;
+        }
+
+        /* --- 遊戲介面 (UI) --- */
+        #ui-container {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            right: 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            pointer-events: none; /* 讓滑鼠可以穿透UI層 */
+            text-shadow: 1px 1px 3px #000;
+        }
+
+        .ui-element {
+            background-color: rgba(26, 26, 46, 0.7);
+            padding: 10px 18px;
+            border-radius: 10px;
+            font-size: 1.25em;
+            font-weight: 600;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+        }
+       
+        /* --- 遊戲結束/過關彈窗 --- */
+        #message-modal {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: rgba(20, 20, 35, 0.85);
+            backdrop-filter: blur(5px);
+            padding: 35px 55px;
+            border-radius: 20px;
+            text-align: center;
+            display: none; /* 預設隱藏 */
+            flex-direction: column;
+            gap: 20px;
+            border: 3px solid #fca311;
+            box-shadow: 0 0 25px rgba(0,0,0,0.6);
+        }
+        #message-title {
+            font-size: 3em;
+            font-weight: bold;
+            margin: 0;
+            text-shadow: 0 0 10px;
+        }
+        #message-score {
+             font-size: 1.8em;
+             color: #e0e0e0;
+        }
+
+        #action-button {
+            padding: 12px 30px;
+            font-size: 1.3em;
+            font-weight: 600;
+            border: none;
+            border-radius: 10px;
+            background: linear-gradient(145deg, #fca311, #e85d04);
+            color: white;
+            cursor: pointer;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.4);
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.3);
+        }
+        #action-button:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+        }
+        #action-button:active {
+            transform: translateY(-1px);
+        }
+
+        /* --- 操作說明 --- */
+        #controls-info {
+            margin-top: 15px;
+            font-size: 1.1em;
+            color: #a0a0c0;
+            text-align: center;
+        }
+       
+    </style>
+</head>
+<body>
+
+    <h1>憤怒火箭 (Angry Rocket) - MQTT版</h1>
+
+    <div id="game-container">
+        <canvas id="gameCanvas"></canvas>
+        <div id="ui-container">
+            <div id="score" class="ui-element">分數: 0</div>
+            <div id="level-display" class="ui-element">關卡: 1</div>
+            <div id="timer" class="ui-element">時間: 00:00</div>
+            <div id="angle-display" class="ui-element">角度: 45°</div>
+            <div id="mqtt-status" class="ui-element" style="color: #ffc107;">MQTT: 未連線</div>
+            <div id="rockets-left" class="ui-element">🚀 剩餘火箭: 5</div>
+        </div>
+        <div id="message-modal">
+            <h2 id="message-title">Level Clear!</h2>
+            <p id="message-score">你的分數: 12500</p>
+            <button id="action-button">下一關</button>
+        </div>
+    </div>
+    <div id="controls-info">
+        壓力操作: 施壓 (> 0) 蓄力 | 壓力停止上升則停止蓄力 | 釋放壓力 (< 0) 發射<br>
+        角度操作: MPU6050 (up/down) 或 [上/下方向鍵] | 備用蓄力: 按住 [空白鍵]
+    </div>
+
+    <script>
+        window.onload = function() {
+            // --- DOM 元素獲取 ---
+            const canvas = document.getElementById('gameCanvas');
+            const ctx = canvas.getContext('2d');
+            const container = document.getElementById('game-container');
+            canvas.width = container.clientWidth;
+            canvas.height = container.clientHeight;
+           
+            const scoreDisplay = document.getElementById('score');
+            const levelDisplay = document.getElementById('level-display');
+            const rocketsLeftDisplay = document.getElementById('rockets-left');
+            const angleDisplay = document.getElementById('angle-display');
+            const timerDisplay = document.getElementById('timer');
+            const messageModal = document.getElementById('message-modal');
+            const messageTitle = document.getElementById('message-title');
+            const messageScore = document.getElementById('message-score');
+            const actionButton = document.getElementById('action-button');
+            const mqttStatusDisplay = document.getElementById('mqtt-status');
+
+            // --- MQTT 設定 ---
+            let mqttClient = null;
+            let pressureValue = -825;
+            let lastPressureValue = -825;
+            const mqttWebSocketUrl = 'ws://192.168.0.168:9001';
+            const mqttPressureTopic = 'RadioRingCon77/LOADCELL';
+            const mqttAngleTopic = 'RadioRingCon77/mpu6050/angleXYZ';
+
+            // --- Telegram 設定 ---
+            const TELEGRAM_BOT_TOKEN = '8285866980:AAG1yh-PA0U9DdQIhHonYtLQF48QZEzEqP4'; 
+            const TELEGRAM_CHAT_ID = '-4926583753';
+           
+            // --- 遊戲變數 ---
+            const gravity = 0.2;
+            let score = 0;
+            let gameState = 'ready';
+            let keys = {};
+            let currentLevel = 0;
+            let power = 0;
+            let blocks = [];
+            let particles = [];
+            let backgroundStars = [];
+            let rocketsLeft = 0;
+            
+            // --- 計時器變數 ---
+            let startTime = 0;
+            let timerInterval = null;
+
+            let launcher = { x: 80, y: canvas.height - 80, width: 80, height: 30, angle: -45 };
+            let rocket = { x: 0, y: 0, width: 25, height: 10, vx: 0, vy: 0 };
+
+
+            const BLOCK_TYPE = {
+                WOOD: { color: '#a1662f', stroke: '#693f19', hp: 1, score: 500 },
+                STONE: { color: '#8d99ae', stroke: '#5e6a7e', hp: 3, score: 1000 },
+                TARGET: { color: '#52b788', stroke: '#2d6a4f', hp: 1, score: 5000 }
+            };
+
+            const levels = [
+                { rockets: 7, layout: [ { type: 'TARGET', x: -250, y: -120, w: 60, h: 60 }, { type: 'WOOD',   x: -400, y: -120, w: 60, h: 60 }, { type: 'WOOD',   x: -250, y: -180, w: 60, h: 60 }, { type: 'TARGET', x: -400, y: -180, w: 60, h: 60 }, { type: 'WOOD',   x: -250, y: -240, w: 60, h: 60 }, { type: 'STONE',  x: -400, y: -270, w: 210, h: 30 } ] },
+                { rockets: 7, layout: [ { type: 'WOOD',   x: -420, y: -90,  w: 180, h: 30 }, { type: 'TARGET', x: -300, y: -150, w: 60,  h: 60 }, { type: 'STONE',  x: -300, y: -210, w: 60,  h: 60 }, { type: 'WOOD',   x: -300, y: -270, w: 60,  h: 60 }, { type: 'WOOD',   x: -300, y: -310, w: 60,  h: 40 }, { type: 'TARGET', x: -300, y: -370, w: 60,  h: 60 } ] },
+                { rockets: 6, layout: [ { type: 'TARGET', x: -200, y: -120, w: 60, h: 60 }, { type: 'TARGET', x: -500, y: -120, w: 60, h: 60 }, { type: 'WOOD',   x: -200, y: -180, w: 60, h: 60 }, { type: 'WOOD',   x: -500, y: -180, w: 60, h: 60 }, { type: 'STONE',  x: -530, y: -210, w: 390, h: 30 } ] },
+                { rockets: 6, layout: [ { type: 'STONE',  x: -410, y: -90,  w: 180, h: 30 }, { type: 'WOOD',   x: -410, y: -150, w: 60,  h: 60 }, { type: 'WOOD',   x: -290, y: -150, w: 60,  h: 60 }, { type: 'TARGET', x: -350, y: -150, w: 60,  h: 60 }, { type: 'STONE',  x: -410, y: -180, w: 180, h: 30 } ] },
+                { rockets: 6, layout: [ { type: 'STONE',  x: -450, y: -90,  w: 240, h: 30 }, { type: 'WOOD',   x: -420, y: -150, w: 60, h: 60 }, { type: 'WOOD',   x: -300, y: -150, w: 60, h: 60 }, { type: 'STONE',  x: -390, y: -180, w: 120, h: 30 }, { type: 'TARGET', x: -360, y: -240, w: 60, h: 60 } ] },
+                { rockets: 5, layout: [ { type: 'STONE',  x: -500, y: -90,  w: 120, h: 30 }, { type: 'STONE',  x: -280, y: -90,  w: 120, h: 30 }, { type: 'WOOD',   x: -500, y: -150, w: 60, h: 60 }, { type: 'WOOD',   x: -220, y: -150, w: 60, h: 60 }, { type: 'TARGET', x: -360, y: -150, w: 60, h: 60 }, { type: 'STONE',  x: -530, y: -180, w: 370, h: 30 } ] },
+                { rockets: 6, layout: [ { type: 'STONE',  x: -400, y: -90,  w: 30, h: 120 }, { type: 'STONE',  x: -200, y: -90,  w: 30, h: 120 }, { type: 'WOOD',   x: -400, y: -210, w: 230, h: 30 }, { type: 'TARGET', x: -300, y: -150, w: 60, h: 60 } ] },
+                { rockets: 7, layout: [ { type: 'STONE',  x: -350, y: -90,  w: 100, h: 30 }, { type: 'WOOD',   x: -340, y: -150, w: 80,  h: 60 }, { type: 'STONE',  x: -350, y: -180, w: 100, h: 30 }, { type: 'WOOD',   x: -340, y: -240, w: 80,  h: 60 }, { type: 'STONE',  x: -350, y: -270, w: 100, h: 30 }, { type: 'TARGET', x: -330, y: -330, w: 60,  h: 60 } ] },
+                { rockets: 7, layout: [ { type: 'STONE',  x: -500, y: -90,  w: 150, h: 30 }, { type: 'WOOD',   x: -475, y: -150, w: 100, h: 60 }, { type: 'TARGET', x: -450, y: -210, w: 60,  h: 60 }, { type: 'STONE',  x: -300, y: -90,  w: 150, h: 30 }, { type: 'WOOD',   x: -275, y: -150, w: 100, h: 60 }, { type: 'TARGET', x: -250, y: -210, w: 60,  h: 60 } ] },
+                { rockets: 5, layout: [ { type: 'STONE',  x: -480, y: -90,  w: 300, h: 30 }, { type: 'STONE',  x: -480, y: -150, w: 120, h: 60 }, { type: 'STONE',  x: -180, y: -150, w: 120, h: 60 }, { type: 'STONE',  x: -480, y: -180, w: 300, h: 30 }, { type: 'TARGET', x: -330, y: -150, w: 60,  h: 60 }, { type: 'WOOD',   x: -330, y: -240, w: 60,  h: 60 } ] }
+            ];
+
+            function setupMQTT() {
+                if (mqttClient && mqttClient.connected) mqttClient.end(true);
+                
+                mqttStatusDisplay.textContent = 'MQTT: 連線中...';
+                mqttStatusDisplay.style.color = '#ffc107';
+
+                const client = mqtt.connect(mqttWebSocketUrl);
+                mqttClient = client;
+
+                client.on('connect', () => {
+                    console.log('MQTT 連線成功!');
+                    mqttStatusDisplay.textContent = 'MQTT: 已連線';
+                    mqttStatusDisplay.style.color = '#70e000';
+                    
+                    client.subscribe([mqttPressureTopic, mqttAngleTopic], (err) => {
+                        if (err) {
+                            console.error('訂閱主題失敗:', err);
+                            mqttStatusDisplay.textContent = 'MQTT: 訂閱失敗';
+                            mqttStatusDisplay.style.color = '#ef233c';
+                        } else {
+                             console.log(`已成功訂閱主題: ${mqttPressureTopic}, ${mqttAngleTopic}`);
+                        }
+                    });
+                });
+
+                client.on('message', (msgTopic, message) => {
+                    const messageString = message.toString();
+                    if (msgTopic === mqttPressureTopic) {
+                        const value = parseFloat(messageString);
+                        if (!isNaN(value)) {
+                            pressureValue = value;
+                            if (client.connected) {
+                                mqttStatusDisplay.textContent = `壓力: ${pressureValue.toFixed(0)}`;
+                            }
+                        }
+                    } else if (msgTopic === mqttAngleTopic) {
+                         if (gameState === 'ready' || gameState === 'charging') {
+                            if (messageString === 'up') launcher.angle = Math.max(-90, launcher.angle - 5);
+                            else if (messageString === 'down') launcher.angle = Math.min(0, launcher.angle + 5);
+                            updateUI();
+                        }
+                    }
+                });
+                client.on('error', (err) => {
+                    console.error('MQTT 連線錯誤:', err);
+                    mqttStatusDisplay.textContent = 'MQTT: 連線錯誤';
+                    mqttStatusDisplay.style.color = '#ef233c';
+                });
+                client.on('close', () => {
+                    console.log('MQTT 連線已關閉');
+                    mqttStatusDisplay.textContent = 'MQTT: 已斷線';
+                    mqttStatusDisplay.style.color = '#ffc107';
+                });
+            }
+           
+            function createStars() {
+                backgroundStars = [];
+                for(let i=0; i<100; i++){
+                    backgroundStars.push({
+                        x: Math.random() * canvas.width,
+                        y: Math.random() * (canvas.height - 100),
+                        radius: Math.random() * 1.5
+                    });
+                }
+            }
+            
+            function setupLevel(levelIndex) {
+                 if (levelIndex >= levels.length) {
+                    console.error("關卡不存在!");
+                    return;
+                }
+                const levelData = levels[levelIndex];
+                score = (levelIndex === 0) ? 0 : score;
+                rocketsLeft = levelData.rockets;
+                gameState = 'ready';
+                messageModal.style.display = 'none';
+                blocks = [];
+                levelData.layout.forEach(b => {
+                    blocks.push({
+                        x: canvas.width + b.x,
+                        y: canvas.height + b.y,
+                        width: b.w, height: b.h,
+                        type: BLOCK_TYPE[b.type],
+                        hp: BLOCK_TYPE[b.type].hp,
+                        vy: 0 
+                    });
+                });
+                
+                if (timerInterval) clearInterval(timerInterval);
+                startTime = Date.now();
+                timerDisplay.textContent = '時間: 00:00';
+                timerInterval = setInterval(updateTimer, 1000);
+
+                updateUI();
+            }
+
+            function updateTimer() {
+                const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
+                const minutes = Math.floor(elapsedSeconds / 60).toString().padStart(2, '0');
+                const seconds = (elapsedSeconds % 60).toString().padStart(2, '0');
+                timerDisplay.textContent = `時間: ${minutes}:${seconds}`;
+            }
+
+            function draw() {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                drawBackground();
+                drawGround();
+                drawLauncher();
+                if (gameState === 'flying') drawRocket();
+                drawBlocks();
+                drawParticles();
+                if (gameState === 'charging') drawPowerBar();
+            }
+            function drawBackground() {
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+                backgroundStars.forEach(star => {
+                    ctx.beginPath();
+                    ctx.arc(star.x, star.y, star.radius, 0, Math.PI * 2);
+                    ctx.fill();
+                });
+            }
+            function drawGround() {
+                const groundHeight = 60;
+                ctx.fillStyle = '#134611';
+                ctx.fillRect(0, canvas.height - groundHeight, canvas.width, groundHeight);
+                ctx.fillStyle = '#3e8914';
+                ctx.fillRect(0, canvas.height - groundHeight, canvas.width, 10);
+            }
+            function drawLauncher() {
+                ctx.save();
+                ctx.translate(launcher.x, launcher.y);
+                ctx.rotate(launcher.angle * Math.PI / 180);
+                ctx.fillStyle = '#4a4e69';
+                ctx.fillRect(0, -launcher.height / 2, launcher.width, launcher.height);
+                ctx.fillStyle = '#22223b';
+                ctx.fillRect(launcher.width - 10, -launcher.height / 2, 10, launcher.height);
+                ctx.restore();
+                ctx.fillStyle = '#9a8c98';
+                ctx.beginPath();
+                ctx.arc(launcher.x, launcher.y + 10, 30, Math.PI, 0);
+                ctx.fill();
+            }
+            function drawRocket() {
+                ctx.save();
+                ctx.translate(rocket.x, rocket.y);
+                const angle = Math.atan2(rocket.vy, rocket.vx);
+                ctx.rotate(angle);
+                const flameSize = Math.random() * 15 + 10;
+                ctx.fillStyle = Math.random() < 0.5 ? 'orange' : 'yellow';
+                ctx.beginPath();
+                ctx.moveTo(-rocket.width / 2, 0);
+                ctx.lineTo(-rocket.width / 2 - flameSize, -rocket.height / 2);
+                ctx.lineTo(-rocket.width / 2 - flameSize, rocket.height / 2);
+                ctx.closePath();
+                ctx.fill();
+                ctx.fillStyle = '#e0e1dd';
+                ctx.fillRect(-rocket.width/2, -rocket.height/2, rocket.width, rocket.height);
+                ctx.fillStyle = '#fca311';
+                ctx.beginPath();
+                ctx.moveTo(rocket.width / 2, -rocket.height / 2);
+                ctx.lineTo(rocket.width / 2 + 10, 0);
+                ctx.lineTo(rocket.width / 2, rocket.height / 2);
+                ctx.closePath();
+                ctx.fill();
+                ctx.restore();
+            }
+            function drawBlocks() {
+                blocks.forEach(block => {
+                    ctx.fillStyle = block.type.color;
+                    ctx.strokeStyle = block.type.stroke;
+                    ctx.lineWidth = 4;
+                    ctx.fillRect(block.x, block.y, block.width, block.height);
+                    ctx.strokeRect(block.x, block.y, block.width, block.height);
+                    if(block.type === BLOCK_TYPE.WOOD){
+                        ctx.strokeStyle = 'rgba(0,0,0,0.2)';
+                        ctx.lineWidth = 2;
+                        ctx.beginPath();
+                        ctx.moveTo(block.x + 10, block.y);
+                        ctx.lineTo(block.x + 10, block.y + block.height);
+                        ctx.moveTo(block.x + block.width - 15, block.y);
+                        ctx.lineTo(block.x + block.width - 15, block.y + block.height);
+                        ctx.stroke();
+                    }
+                });
+            }
+            function drawPowerBar() {
+                const barX = launcher.x + 80, barY = launcher.y - 150;
+                const barWidth = 25, barHeight = 120;
+                ctx.fillStyle = 'rgba(0,0,0,0.5)';
+                ctx.fillRect(barX, barY, barWidth, barHeight);
+                const powerHeight = (power / 100) * barHeight;
+                ctx.fillStyle = `hsl(${(1 - power / 100) * 120}, 100%, 50%)`;
+                ctx.fillRect(barX, barY + barHeight - powerHeight, barWidth, powerHeight);
+                ctx.strokeStyle = 'white';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(barX, barY, barWidth, barHeight);
+            }
+            function drawParticles() {
+                particles.forEach(p => {
+                    ctx.fillStyle = `rgba(${p.r}, ${p.g}, ${p.b}, ${p.alpha})`;
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+                    ctx.fill();
+                });
+            }
+            function updateBlocks() {
+                const groundY = canvas.height - 60;
+                const stabilityThreshold = 0.5; 
+                for (let i = 0; i < 2; i++) {
+                    blocks.forEach(block => {
+                        let isSupported = false;
+                        if (block.y + block.height >= groundY) {
+                            isSupported = true;
+                            block.y = groundY - block.height;
+                        } else {
+                            blocks.forEach(other => {
+                                if (block === other) return;
+                                const horizontalOverlap = block.x < other.x + other.width && block.x + block.width > other.x;
+                                const verticalProximity = (block.y + block.height >= other.y) && (block.y + block.height <= other.y + 10);
+                                if (horizontalOverlap && verticalProximity) {
+                                    isSupported = true;
+                                    block.y = other.y - block.height;
+                                }
+                            });
+                        }
+                        if (isSupported) {
+                            if (Math.abs(block.vy) < stabilityThreshold) {
+                                block.vy = 0;
+                            } else {
+                                block.vy *= -0.1; 
+                            }
+                        } else {
+                            block.vy += gravity / 2;
+                        }
+                    });
+                    blocks.forEach(block => {
+                        block.y += block.vy;
+                    });
+                }
+            }
+            
+            function update() {
+                const pressureStartThreshold = 0;
+                const pressureReleaseThreshold = 0;
+
+                if ((pressureValue >= pressureStartThreshold || keys[' ']) && gameState === 'ready' && rocketsLeft > 0) {
+                    gameState = 'charging';
+                }
+                
+                if (gameState === 'ready' || gameState === 'charging') {
+                    if (keys['ArrowUp'] && launcher.angle > -90) {
+                        launcher.angle -= 1;
+                    }
+                    if (keys['ArrowDown'] && launcher.angle < 0) {
+                        launcher.angle += 1;
+                    }
+                }
+
+                if (gameState === 'charging') {
+                    let chargeSpeed = 1.2;
+                    
+                    if (pressureValue > lastPressureValue) {
+                        if (pressureValue >= pressureStartThreshold) {
+                            if (pressureValue > 1000) chargeSpeed = 6.0;
+                            else if (pressureValue > 500) chargeSpeed = 4.5;
+                            else chargeSpeed = 3.0;
+                        }
+                        power = Math.min(100, power + chargeSpeed);
+                    }
+                    
+                    if (pressureValue < pressureReleaseThreshold && power > 5) {
+                        fireRocket();
+                    }
+                }
+
+                if (gameState === 'flying') {
+                    rocket.vy += gravity;
+                    rocket.x += rocket.vx;
+                    rocket.y += rocket.vy;
+                    if (rocket.x > canvas.width || rocket.x < 0 || rocket.y > canvas.height - 60) {
+                        createExplosion(rocket.x, rocket.y, '#134611');
+                        resetForNextShot();
+                        return;
+                    }
+                    for (let i = blocks.length - 1; i >= 0; i--) {
+                        let block = blocks[i];
+                        if (rocket.x > block.x && rocket.x < block.x + block.width &&
+                            rocket.y > block.y && rocket.y < block.y + block.height) {
+                            block.hp -= 1;
+                            createExplosion(rocket.x, rocket.y, block.type.color);
+                            if (block.hp <= 0) {
+                                score += block.type.score;
+                                blocks.splice(i, 1);
+                            }
+                            resetForNextShot();
+                            return;
+                        }
+                    }
+                }
+
+                if (gameState !== 'end') updateBlocks();
+                updateParticles();
+                checkGameEnd();
+                updateUI();
+                
+                lastPressureValue = pressureValue;
+            }
+
+            function updateParticles() {
+                for(let i = particles.length - 1; i >= 0; i--){
+                    let p = particles[i];
+                    p.x += p.vx;
+                    p.y += p.vy;
+                    p.alpha -= 0.02;
+                    if(p.alpha <= 0) particles.splice(i, 1);
+                }
+            }
+            function checkGameEnd() {
+                if (gameState === 'end') return;
+                const targetsLeft = blocks.some(b => b.type === BLOCK_TYPE.TARGET);
+               
+                if (!targetsLeft) { 
+                    gameState = 'end';
+                    score += rocketsLeft * 10000;
+                    showEndMessage(true);
+                } else if (rocketsLeft <= 0 && gameState === 'ready') { 
+                    gameState = 'end';
+                    showEndMessage(false);
+                }
+            }
+            function fireRocket() {
+                if (gameState !== 'charging' || rocketsLeft <= 0 || power < 5) return;
+                const angleRad = launcher.angle * Math.PI / 180;
+                const launchPower = (power / 100) * 28 + 5;
+                rocket.x = launcher.x + Math.cos(angleRad) * launcher.width;
+                rocket.y = launcher.y + Math.sin(angleRad) * launcher.width;
+                rocket.vx = Math.cos(angleRad) * launchPower;
+                rocket.vy = Math.sin(angleRad) * launchPower;
+                power = 0;
+                rocketsLeft--;
+                gameState = 'flying';
+                updateUI();
+            }
+            function resetForNextShot() {
+                if (gameState === 'end') return;
+                setTimeout(() => {
+                    if (gameState !== 'end') gameState = 'ready';
+                    updateUI();
+                }, 500);
+            }
+            function updateUI() {
+                scoreDisplay.textContent = `分數: ${score}`;
+                levelDisplay.textContent = `關卡: ${currentLevel + 1}`;
+                rocketsLeftDisplay.textContent = `🚀 剩餘火箭: ${rocketsLeft}`;
+                angleDisplay.textContent = `角度: ${-Math.round(launcher.angle)}°`;
+            }
+            function showEndMessage(isWin) {
+                clearInterval(timerInterval);
+
+                if (isWin) {
+                    const now = new Date();
+                    const dateString = `${now.getFullYear()}/${(now.getMonth() + 1).toString().padStart(2, '0')}/${now.getDate().toString().padStart(2, '0')}`;
+                    const timeOfDayString = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
+                    
+                    const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
+                    const minutes = Math.floor(elapsedSeconds / 60).toString().padStart(2, '0');
+                    const seconds = (elapsedSeconds % 60).toString().padStart(2, '0');
+                    const durationString = `${minutes}:${seconds}`;
+
+                    sendTelegramMessage(`關卡 ${currentLevel + 1} 通過`, score, durationString, dateString, timeOfDayString);
+
+                    if (currentLevel < levels.length - 1) { 
+                        messageTitle.textContent = '關卡通過！';
+                        actionButton.textContent = '下一關';
+                    } else { 
+                        messageTitle.textContent = '恭喜全破！';
+                        actionButton.textContent = '重新遊玩';
+                        sendTelegramMessage(`恭喜全破`, score, durationString, dateString, timeOfDayString);
+                    }
+                    messageTitle.style.color = '#70e000';
+                } else {
+                    const now = new Date();
+                    const dateString = `${now.getFullYear()}/${(now.getMonth() + 1).toString().padStart(2, '0')}/${now.getDate().toString().padStart(2, '0')}`;
+                    const timeOfDayString = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
+                    const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
+                    const minutes = Math.floor(elapsedSeconds / 60).toString().padStart(2, '0');
+                    const seconds = (elapsedSeconds % 60).toString().padStart(2, '0');
+                    const durationString = `${minutes}:${seconds}`;
+                    sendTelegramMessage(`關卡 ${currentLevel + 1} 失敗`, score, durationString, dateString, timeOfDayString);
+                    
+                    messageTitle.textContent = '遊戲結束';
+                    messageTitle.style.color = '#ef233c';
+                    actionButton.textContent = '重新開始';
+                }
+                messageScore.textContent = `你的總分: ${score}`;
+                messageModal.style.display = 'flex';
+            }
+            function createExplosion(x, y, color) {
+                const hex = color.replace('#', '');
+                const r = parseInt(hex.substring(0,2), 16);
+                const g = parseInt(hex.substring(2,4), 16);
+                const b = parseInt(hex.substring(4,6), 16);
+                for (let i = 0; i < 30; i++) {
+                    particles.push({
+                        x: x, y: y,
+                        vx: (Math.random() - 0.5) * 6, vy: (Math.random() - 0.5) * 6,
+                        radius: Math.random() * 3 + 1,
+                        r: r, g: g, b: b, alpha: 1
+                    });
+                }
+            }
+            
+            function sendTelegramMessage(status, finalScore, durationString, dateString, timeOfDayString) {
+                if (TELEGRAM_BOT_TOKEN === 'YOUR_TELEGRAM_BOT_TOKEN' || TELEGRAM_CHAT_ID === 'YOUR_TELEGRAM_CHAT_ID') {
+                    console.warn("尚未設定 Telegram Bot Token 或 Chat ID，無法發送訊息。");
+                    return;
+                }
+                const gameName = "憤怒火箭 (Angry Rocket)";
+                let message = `🎮 ${gameName}\n\n狀態: ${status}\n🏆 總分: ${finalScore}`;
+                if (durationString) {
+                    message += `\n⏱️ 遊戲耗時: ${durationString}`;
+                }
+                if (dateString) {
+                    message += `\n📅 日期: ${dateString}`;
+                }
+                if (timeOfDayString) {
+                    message += `\n🕒 時間: ${timeOfDayString}`;
+                }
+
+
+                const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+                fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: message }),
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.ok) console.log('Telegram 訊息發送成功！');
+                    else console.error('Telegram 訊息發送失敗:', data);
+                })
+                .catch((error) => console.error('發送 Telegram 訊息時發生錯誤:', error));
+            }
+
+            // --- 事件監聽 ---
+            window.addEventListener('keydown', e => {
+                if (gameState === 'end') return;
+                keys[e.key] = true;
+                if (e.key === ' ' && gameState === 'ready') gameState = 'charging';
+            });
+            window.addEventListener('keyup', e => {
+                if (gameState === 'end' && e.key !== 'Enter') return;
+                keys[e.key] = false;
+                if (e.key === ' ' && pressureValue < 0) fireRocket();
+                if (e.key === 'Enter' && gameState === 'end') actionButton.click();
+            });
+            actionButton.addEventListener('click', () => {
+                const targetsLeft = blocks.some(b => b.type === BLOCK_TYPE.TARGET);
+                if (!targetsLeft && currentLevel < levels.length - 1) { 
+                    currentLevel++;
+                    setupLevel(currentLevel);
+                } else { 
+                    if(!targetsLeft && currentLevel >= levels.length -1) currentLevel = 0;
+                    setupLevel(currentLevel);
+                }
+            });
+
+            // --- 遊戲主循環 ---
+            function gameLoop() {
+                update();
+                draw();
+                requestAnimationFrame(gameLoop);
+            }
+
+            // --- 開始遊戲 ---
+            createStars();
+            setupLevel(currentLevel);
+            setupMQTT(); 
+            gameLoop();
+        };
+    </script>
+</body>
+</html>
+
